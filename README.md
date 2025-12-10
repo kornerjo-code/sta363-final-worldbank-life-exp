@@ -1,4 +1,4 @@
-# STA 363 Final Project - World Bank Life Expenctancy
+# STA 309 Final Project - World Bank Life Expenctancy
 Goal: Use World Bank Health, Nutrition, and Population data to predict whether a country has high or low life expectancy based on health and demographic indicators.
 
 Data Sources:
