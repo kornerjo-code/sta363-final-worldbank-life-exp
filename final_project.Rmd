@@ -1,0 +1,533 @@
+---
+title: "final_project"
+author: "Julien Korner"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(patchwork)
+library(randomForest)
+library(class)
+library(rpart)
+library(rpart.plot)
+library(caret)
+```
+
+# Data
+```{r}
+HNP <- read_csv("https://raw.githubusercontent.com/baileraj/Datasets/master/HNP-Subset-26may21.csv")
+glimpse(HNP)
+```
+# Data Cleaning
+```{r}
+HNP_subset <- HNP %>%
+  filter(`Series Name` %in%
+           c("Life expectancy at birth, total (years)",
+             "Birth rate, crude (per 1,000 people)",
+             "Death rate, crude (per 1,000 people)",
+             "Fertility rate, total (births per woman)",
+             "Urban population (% of total population)",
+             "Literacy rate, adult total (% of people ages 15 and above)"))
+
+dim(HNP_subset)
+```
+
+```{r}
+HNP_long <- HNP_subset %>%
+  pivot_longer(
+    cols = starts_with("19") | starts_with("20"),
+    names_to = "Year",
+    values_to = "Value"
+  )
+
+HNP_long$Year <- as.numeric(substr(HNP_long$Year, 1, 4))
+HNP_long$Value <- as.numeric(HNP_long$Value)
+
+glimpse(HNP_long)
+```
+
+```{r}
+HNP_wide <- HNP_long %>%
+  # Drop Series Code so it does NOT become part of the row ID
+  select(-`Series Code`) %>%
+  pivot_wider(
+    id_cols = c(`Country Name`, `Country Code`, Year),
+    names_from = `Series Name`,
+    values_from = Value
+  )
+
+glimpse(HNP_wide)
+dim(HNP_wide)
+```
+
+```{r}
+HNP_model <- HNP_wide %>%
+  filter(!is.na(`Life expectancy at birth, total (years)`))
+
+dim(HNP_model)
+```
+```{r}
+model_vars <- HNP_wide %>%
+  filter(
+    Year >= 2005,
+    !is.na(`Life expectancy at birth, total (years)`),
+    !is.na(`Birth rate, crude (per 1,000 people)`),
+    !is.na(`Death rate, crude (per 1,000 people)`),
+    !is.na(`Fertility rate, total (births per woman)`),
+    !is.na(`Urban population (% of total population)`)
+  ) %>%
+  mutate(
+    high_lifeexp = if_else(
+      `Life expectancy at birth, total (years)` >= 
+        median(`Life expectancy at birth, total (years)`, na.rm = TRUE),
+      "High",
+      "Low"
+    ),
+    high_lifeexp = factor(high_lifeexp, levels = c("Low", "High"))
+  )
+
+nrow(model_vars)
+table(model_vars$high_lifeexp)
+```
+
+
+
+# Exploratory Analysis & Dashboard
+```{r}
+p1 <- ggplot(model_vars, aes(
+  x = `Birth rate, crude (per 1,000 people)`,
+  y = `Life expectancy at birth, total (years)`
+)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Life Expectancy vs Birth Rate",
+    x = "Birth Rate (per 1,000 people)",
+    y = "Life Expectancy (years)"
+  )
+p1
+```
+
+
+This plot shows a strong linear negative correlation between life expectancy and birth rate.
+
+
+```{r}
+p2 <- ggplot(model_vars, aes(
+  x = `Death rate, crude (per 1,000 people)`,
+  y = `Life expectancy at birth, total (years)`
+)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Life Expectancy vs Death Rate",
+    x = "Death Rate (per 1,000 people)",
+    y = "Life Expectancy (years)"
+  )
+p2
+```
+
+
+This plot shows a strong negative correlation between life expectancy and death 
+rate but it does not appear to be perfectly linear.
+
+```{r}
+p3 <- ggplot(model_vars, aes(
+  x = `Fertility rate, total (births per woman)`,
+  y = `Life expectancy at birth, total (years)`
+)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Life Expectancy vs Fertility Rate",
+    x = "Fertility Rate (births per woman)",
+    y = "Life Expectancy (years)"
+  )
+p3
+```
+
+This plot shows a strong negative correlation between life expectancy and fertility rate.
+
+```{r}
+p4 <- ggplot(model_vars, aes(
+  x = `Urban population (% of total population)`,
+  y = `Life expectancy at birth, total (years)`
+)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Life Expectancy vs Urban Population",
+    x = "Urban Population (% of total)",
+    y = "Life Expectancy (years)"
+  )
+p4
+```
+
+This plot shows a moderately strong positive linear correlation between life expectancy and urban population.
+
+```{r}
+p5 <- ggplot(model_vars, aes(
+  x = high_lifeexp,
+  y = `Birth rate, crude (per 1,000 people)`
+)) +
+  geom_boxplot() +
+  labs(
+    title = "Birth Rate by Life Expectancy Group",
+    x = "Life Expectancy Group",
+    y = "Birth Rate (per 1,000 people)"
+  )
+p5
+```
+
+This plot shows that most countries with low life expectancy will have higher birth
+rates than most countries with high life expectancy. You can also see that countries 
+with low life expectancy have a higher range while the countries with high life 
+expectancy are more concentrated besides a few outliers.
+
+```{r}
+(p1 + p2) / (p3 + p4) / p5
+```
+
+# Predictive Modeling
+
+## Logistic Regression Model
+
+```{r}
+life_model <- glm(
+  high_lifeexp ~
+    `Birth rate, crude (per 1,000 people)` +
+    `Death rate, crude (per 1,000 people)` +
+    `Fertility rate, total (births per woman)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  family = binomial
+)
+
+summary(life_model)
+
+logit_full_prob <- predict(life_model, type = "response")
+logit_full_pred <- ifelse(logit_full_prob >= 0.5, "High", "Low")
+logit_full_pred <- factor(logit_full_pred, levels = c("Low", "High"))
+
+logit_full_accuracy <- mean(logit_full_pred == model_vars$high_lifeexp)
+logit_full_accuracy
+```
+
+```{r}
+set.seed(123)
+
+logit_cv <- train(
+  high_lifeexp ~
+    `Birth rate, crude (per 1,000 people)` +
+    `Death rate, crude (per 1,000 people)` +
+    `Fertility rate, total (births per woman)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  method = "glm",
+  family = binomial,
+  trControl = trainControl(
+    method = "cv",
+    number = 5
+  ),
+  metric = "Accuracy"
+)
+
+logit_cv
+
+
+logit_cv_accuracy <- logit_cv$results$Accuracy[1]
+logit_cv_accuracy
+```
+
+## Random Forest Tree Model
+```{r}
+rf_X <- model_vars %>%
+  dplyr::select(
+    `Birth rate, crude (per 1,000 people)`,
+    `Death rate, crude (per 1,000 people)`,
+    `Fertility rate, total (births per woman)`,
+    `Urban population (% of total population)`
+  )
+
+rf_y <- model_vars$high_lifeexp
+
+set.seed(123) 
+
+rf_model <- randomForest(
+  x = rf_X,
+  y = rf_y,
+  ntree = 500,
+  importance = TRUE
+)
+
+rf_model
+
+rf_accuracy <- 1 - rf_model$err.rate[rf_model$ntree, "OOB"]
+rf_accuracy
+
+```
+
+```{r}
+
+set.seed(123)
+
+rf_cv <- train(
+  high_lifeexp ~
+    `Birth rate, crude (per 1,000 people)` +
+    `Death rate, crude (per 1,000 people)` +
+    `Fertility rate, total (births per woman)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  method = "rf",
+  trControl = trainControl(
+    method = "cv",
+    number = 5
+  ),
+  metric = "Accuracy",
+  tuneLength = 3
+)
+
+rf_cv
+
+
+rf_cv_accuracy <- max(rf_cv$results$Accuracy)
+rf_cv_accuracy
+```
+## KNN model
+```{r}
+knn_X <- model_vars %>%
+  dplyr::select(
+    `Birth rate, crude (per 1,000 people)`,
+    `Death rate, crude (per 1,000 people)`,
+    `Fertility rate, total (births per woman)`,
+    `Urban population (% of total population)`
+  )
+
+knn_X_scaled <- scale(knn_X)
+
+knn_y <- model_vars$high_lifeexp
+
+set.seed(123)
+
+train_index <- sample(1:nrow(knn_X_scaled), 0.8 * nrow(knn_X_scaled))
+
+X_train <- knn_X_scaled[train_index, ]
+X_test  <- knn_X_scaled[-train_index, ]
+
+y_train <- knn_y[train_index]
+y_test  <- knn_y[-train_index]
+
+knn_pred <- knn(
+  train = X_train,
+  test  = X_test,
+  cl    = y_train,
+  k     = 7
+)
+
+knn_table <- table(
+  Actual = y_test,
+  Predicted = knn_pred
+)
+
+knn_table
+
+knn_accuracy <- mean(knn_pred == y_test)
+knn_accuracy
+```
+
+```{r}
+
+set.seed(123)
+
+knn_cv <- train(
+  high_lifeexp ~
+    `Birth rate, crude (per 1,000 people)` +
+    `Death rate, crude (per 1,000 people)` +
+    `Fertility rate, total (births per woman)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  method = "knn",
+  trControl = trainControl(
+    method = "cv",
+    number = 5
+  ),
+  preProcess = c("center", "scale"),
+  tuneLength = 10,
+  metric = "Accuracy"
+)
+
+knn_cv
+
+knn_cv_accuracy <- max(knn_cv$results$Accuracy)
+knn_cv_accuracy
+```
+## Small Logistic Model
+
+```{r}
+logit_small <- glm(
+  high_lifeexp ~
+    `Birth rate, crude (per 1,000 people)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  family = binomial
+)
+
+summary(logit_small)
+
+logit_small_prob <- predict(logit_small, type = "response")
+
+logit_small_pred <- ifelse(logit_small_prob >= 0.5, "High", "Low")
+logit_small_pred <- factor(logit_small_pred, levels = c("Low", "High"))
+
+logit_small_table <- table(
+  Actual = model_vars$high_lifeexp,
+  Predicted = logit_small_pred
+)
+logit_small_table
+
+logit_small_accuracy <- mean(logit_small_pred == model_vars$high_lifeexp)
+logit_small_accuracy
+
+```
+
+```{r}
+
+set.seed(123)
+
+logit_small_cv <- train(
+  high_lifeexp ~
+    `Birth rate, crude (per 1,000 people)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  method = "glm",
+  family = binomial,
+  trControl = trainControl(
+    method = "cv",
+    number = 5
+  ),
+  metric = "Accuracy"
+)
+
+logit_small_cv
+
+logit_small_cv_accuracy <- max(logit_small_cv$results$Accuracy)
+logit_small_cv_accuracy
+```
+## Decision Tree Model
+```{r}
+tree_model <- rpart(
+  high_lifeexp ~ 
+    `Birth rate, crude (per 1,000 people)` +
+    `Death rate, crude (per 1,000 people)` +
+    `Fertility rate, total (births per woman)` +
+    `Urban population (% of total population)`,
+  data = model_vars,
+  method = "class"
+)
+
+rpart.plot(tree_model, main = "Decision Tree for Life Expectancy Classification")
+
+tree_pred <- predict(tree_model, type = "class")
+
+tree_table <- table(
+  Actual = model_vars$high_lifeexp,
+  Predicted = tree_pred
+)
+tree_table
+
+tree_accuracy <- mean(tree_pred == model_vars$high_lifeexp)
+tree_accuracy
+
+```
+
+```{r}
+set.seed(123)
+
+tree_data <- model_vars %>%
+  dplyr::select(
+    high_lifeexp,
+    birth = `Birth rate, crude (per 1,000 people)`,
+    death = `Death rate, crude (per 1,000 people)`,
+    fertility = `Fertility rate, total (births per woman)`,
+    urban = `Urban population (% of total population)`
+  )
+
+tree_cv <- train(
+  high_lifeexp ~ birth + death + fertility + urban,
+  data = tree_data,
+  method = "rpart",
+  trControl = trainControl(
+    method = "cv",
+    number = 5
+  ),
+  metric = "Accuracy"
+)
+
+tree_cv
+
+tree_cv_accuracy <- max(tree_cv$results$Accuracy)
+tree_cv_accuracy
+```
+## Model Comparison
+```{r}
+comparison <- tibble(
+  Model = c(
+    "Logistic (Full)",
+    "Random Forest",
+    "kNN",
+    "Logistic (Subset)",
+    "Decision Tree"
+  ),
+  Accuracy = c(
+    logit_cv_accuracy,  
+    rf_cv_accuracy,
+    knn_cv_accuracy,
+    logit_small_cv_accuracy,  
+    tree_cv_accuracy
+  )
+)
+
+comparison
+```
+
+```{r}
+accuracy_plot <- ggplot(comparison, aes(x = Model, y = Accuracy, fill = (Model == "Random Forest"))) +
+  geom_col() +
+  scale_fill_manual(values = c("grey70", "steelblue")) +
+  coord_cartesian(ylim = c(0.8, 1)) +
+  labs(
+    title = "Model Accuracy Comparison",
+    x = "Model",
+    y = "Accuracy"
+  ) +
+  theme(legend.position = "none")
+
+accuracy_plot
+```
+
+# Model Comparison Results
+
+I compared full logistic regression, random forest, k-Nearest Neighbors (kNN), 
+subset logistic regression, and a decision tree using accuracy to test performance. 
+Since the response variable is binary accuracy is an appropriate way to test this. 
+Out of these models the random forest model and the KNN models performed the best
+with an accuracy of just above 94%. The full logistic regression was next with
+about 91% accuracy. Then the small logistic regression with 86% accuracy. The 
+decision tree was the worst predictive model in terms of accuracy with only 
+about 84%, but every model did a solid job.
+
+The random forest model was the best performing model narrowly beating the 
+KNN model because of its ability to predict with the highest accuracy. One
+limitation this model has is that it is harder to interpret, making it more 
+difficult to explain the contributions of each predictor.
+
+# Implications of the Results
+
+These results show us that health indicators like birth rate, death rate, 
+fertility rate, and urban population percentage are strong predictors of 
+whether a country will have a high or low life expectancy. This could be 
+useful for figuring out which countries are at risk of having their life expectancy
+fall.
+
