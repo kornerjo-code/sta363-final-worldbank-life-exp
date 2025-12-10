@@ -6,7 +6,7 @@ World Bank - Health, Nutrition, and Population (HNP) Statistics
 Pre-processed subset from:
 https://raw.githubusercontent.com/baileraj/Datasets/master/HNP-Subset-26may21.csv
 
-Files in this Repository:*
+Files in this Repository:
 
 final_project.Rmd - Full analysis with code
 final_report.html - Clean report
